@@ -12,6 +12,87 @@ import (
 	"go.lsp.dev/uri"
 )
 
+func TestConvertLegacyEnvInstruction(t *testing.T) {
+	testCases := []struct {
+		name     string
+		input    string
+		expected string
+		ok       bool
+	}{
+		{
+			name:     "simple value",
+			input:    "ENV DISPLAY :0",
+			expected: "ENV DISPLAY=:0",
+			ok:       true,
+		},
+		{
+			name:     "multiple words in value",
+			input:    "ENV GREETING hello world",
+			expected: "ENV GREETING=\"hello world\"",
+			ok:       true,
+		},
+		{
+			name:     "quoted value",
+			input:    "ENV GREETING \"hello world\"",
+			expected: "ENV GREETING=\"hello world\"",
+			ok:       true,
+		},
+		{
+			name:     "inline comment is preserved",
+			input:    "ENV DISPLAY :0 # x11",
+			expected: "ENV DISPLAY=\":0 # x11\"",
+			ok:       true,
+		},
+		{
+			name:     "multiline continuation is preserved",
+			input:    "ENV DEPS curl \\\n    git \\\n    make",
+			expected: "ENV DEPS=\"curl \\\n    git \\\n    make\"",
+			ok:       true,
+		},
+		{
+			name:     "keyword casing is preserved",
+			input:    "env DISPLAY :0",
+			expected: "env DISPLAY=:0",
+			ok:       true,
+		},
+		{
+			name:     "ambiguous assignment-like value is quoted",
+			input:    "ENV ONE TWO= THREE=world",
+			expected: "ENV ONE=\"TWO= THREE=world\"",
+			ok:       true,
+		},
+		{
+			name:     "spaces only separator case is quoted",
+			input:    "ENV VAR1 = hola VAR2 = mundo",
+			expected: "ENV VAR1=\"= hola VAR2 = mundo\"",
+			ok:       true,
+		},
+		{
+			name:  "already key value syntax",
+			input: "ENV DISPLAY=:0",
+			ok:    false,
+		},
+		{
+			name:  "missing value",
+			input: "ENV DISPLAY",
+			ok:    false,
+		},
+		{
+			name:  "wrong instruction",
+			input: "ARG DISPLAY :0",
+			ok:    false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			actual, ok := convertLegacyEnvInstruction(tc.input)
+			require.Equal(t, tc.ok, ok)
+			require.Equal(t, tc.expected, actual)
+		})
+	}
+}
+
 func TestParse(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		value, exists := os.LookupEnv("DOCKER_LANGUAGE_SERVER_WINDOWS_CI")
@@ -441,6 +522,142 @@ func TestParse(t *testing.T) {
 						{
 							Title: "Ignore this type of error with check=skip=ConsistentInstructionCasing",
 							Edit:  "# check=skip=ConsistentInstructionCasing\n",
+							Range: &protocol.Range{
+								Start: protocol.Position{Line: 0, Character: 0},
+								End:   protocol.Position{Line: 0, Character: 0},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:     "legacy key value format suggests equals syntax code action",
+			content:  "FROM scratch\nENV DISPLAY :0",
+			overlaps: false,
+			diagnostics: []protocol.Diagnostic{
+				{
+					Range: protocol.Range{
+						Start: protocol.Position{Line: 1, Character: 0},
+						End:   protocol.Position{Line: 1, Character: 14},
+					},
+					Message:  "Legacy key/value format with whitespace separator should not be used (\"ENV key=value\" should be used instead of legacy \"ENV key value\" format)",
+					Source:   types.CreateStringPointer("buildkit-testing-source"),
+					Severity: types.CreateDiagnosticSeverityPointer(protocol.DiagnosticSeverityWarning),
+					Code:     &protocol.IntegerOrString{Value: "LegacyKeyValueFormat"},
+					CodeDescription: &protocol.CodeDescription{
+						HRef: "https://docs.docker.com/go/dockerfile/rule/legacy-key-value-format/",
+					},
+					Data: []types.NamedEdit{
+						{
+							Title: "Convert to key=value format",
+							Edit:  "ENV DISPLAY=:0",
+						},
+						{
+							Title: "Ignore this type of error with check=skip=LegacyKeyValueFormat",
+							Edit:  "# check=skip=LegacyKeyValueFormat\n",
+							Range: &protocol.Range{
+								Start: protocol.Position{Line: 0, Character: 0},
+								End:   protocol.Position{Line: 0, Character: 0},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:     "legacy key value format with multiple words suggests equals syntax code action",
+			content:  "FROM scratch\nENV GREETING hello world",
+			overlaps: false,
+			diagnostics: []protocol.Diagnostic{
+				{
+					Range: protocol.Range{
+						Start: protocol.Position{Line: 1, Character: 0},
+						End:   protocol.Position{Line: 1, Character: 24},
+					},
+					Message:  "Legacy key/value format with whitespace separator should not be used (\"ENV key=value\" should be used instead of legacy \"ENV key value\" format)",
+					Source:   types.CreateStringPointer("buildkit-testing-source"),
+					Severity: types.CreateDiagnosticSeverityPointer(protocol.DiagnosticSeverityWarning),
+					Code:     &protocol.IntegerOrString{Value: "LegacyKeyValueFormat"},
+					CodeDescription: &protocol.CodeDescription{
+						HRef: "https://docs.docker.com/go/dockerfile/rule/legacy-key-value-format/",
+					},
+					Data: []types.NamedEdit{
+						{
+							Title: "Convert to key=value format",
+							Edit:  "ENV GREETING=\"hello world\"",
+						},
+						{
+							Title: "Ignore this type of error with check=skip=LegacyKeyValueFormat",
+							Edit:  "# check=skip=LegacyKeyValueFormat\n",
+							Range: &protocol.Range{
+								Start: protocol.Position{Line: 0, Character: 0},
+								End:   protocol.Position{Line: 0, Character: 0},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:     "legacy key value format with assignment-like tokens uses quotes",
+			content:  "FROM scratch\nENV ONE TWO= THREE=world",
+			overlaps: false,
+			diagnostics: []protocol.Diagnostic{
+				{
+					Range: protocol.Range{
+						Start: protocol.Position{Line: 1, Character: 0},
+						End:   protocol.Position{Line: 1, Character: 24},
+					},
+					Message:  "Legacy key/value format with whitespace separator should not be used (\"ENV key=value\" should be used instead of legacy \"ENV key value\" format)",
+					Source:   types.CreateStringPointer("buildkit-testing-source"),
+					Severity: types.CreateDiagnosticSeverityPointer(protocol.DiagnosticSeverityWarning),
+					Code:     &protocol.IntegerOrString{Value: "LegacyKeyValueFormat"},
+					CodeDescription: &protocol.CodeDescription{
+						HRef: "https://docs.docker.com/go/dockerfile/rule/legacy-key-value-format/",
+					},
+					Data: []types.NamedEdit{
+						{
+							Title: "Convert to key=value format",
+							Edit:  "ENV ONE=\"TWO= THREE=world\"",
+						},
+						{
+							Title: "Ignore this type of error with check=skip=LegacyKeyValueFormat",
+							Edit:  "# check=skip=LegacyKeyValueFormat\n",
+							Range: &protocol.Range{
+								Start: protocol.Position{Line: 0, Character: 0},
+								End:   protocol.Position{Line: 0, Character: 0},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name:     "legacy key value format multiline uses quotes",
+			content:  "FROM scratch\nENV DEPS curl \\\n    git \\\n    make",
+			overlaps: false,
+			diagnostics: []protocol.Diagnostic{
+				{
+					Range: protocol.Range{
+						Start: protocol.Position{Line: 1, Character: 0},
+						End:   protocol.Position{Line: 3, Character: 8},
+					},
+					Message:  "Legacy key/value format with whitespace separator should not be used (\"ENV key=value\" should be used instead of legacy \"ENV key value\" format)",
+					Source:   types.CreateStringPointer("buildkit-testing-source"),
+					Severity: types.CreateDiagnosticSeverityPointer(protocol.DiagnosticSeverityWarning),
+					Code:     &protocol.IntegerOrString{Value: "LegacyKeyValueFormat"},
+					CodeDescription: &protocol.CodeDescription{
+						HRef: "https://docs.docker.com/go/dockerfile/rule/legacy-key-value-format/",
+					},
+					Data: []types.NamedEdit{
+						{
+							Title: "Convert to key=value format",
+							Edit:  "ENV DEPS=\"curl \\\n    git \\\n    make\"",
+						},
+						{
+							Title: "Ignore this type of error with check=skip=LegacyKeyValueFormat",
+							Edit:  "# check=skip=LegacyKeyValueFormat\n",
 							Range: &protocol.Range{
 								Start: protocol.Position{Line: 0, Character: 0},
 								End:   protocol.Position{Line: 0, Character: 0},

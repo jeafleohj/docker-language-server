@@ -93,8 +93,99 @@ func encloseWithQuotes(s string) string {
 	return fmt.Sprintf(`"%v"`, s)
 }
 
-func createResolutionEdit(instruction *parser.Node, warning lint.Warning) *types.NamedEdit {
-	if instruction != nil && instruction.StartLine == int(warning.Location.Ranges[0].Start.Line) && instruction.Next != nil {
+func isQuotedValue(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	return (s[0] == '"' && s[len(s)-1] == '"') || (s[0] == '\'' && s[len(s)-1] == '\'')
+}
+
+func shouldQuoteLegacyEnvValue(s string) bool {
+	if strings.ContainsAny(s, " \t\n\r") {
+		return true
+	}
+	if strings.Contains(s, "=") {
+		return true
+	}
+	return false
+}
+
+func quoteLegacyEnvValue(s string) string {
+	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(s, `"`, `\"`))
+}
+
+func convertLegacyEnvInstruction(original string) (string, bool) {
+	trimmedLeft := strings.TrimLeft(original, " \t")
+	if trimmedLeft == "" {
+		return "", false
+	}
+
+	keywordEnd := 0
+	for keywordEnd < len(trimmedLeft) && trimmedLeft[keywordEnd] != ' ' && trimmedLeft[keywordEnd] != '\t' {
+		keywordEnd++
+	}
+	if !strings.EqualFold(trimmedLeft[:keywordEnd], "ENV") {
+		return "", false
+	}
+	if keywordEnd == len(trimmedLeft) {
+		return "", false
+	}
+
+	rest := trimmedLeft[keywordEnd:]
+	rest = strings.TrimLeft(rest, " \t")
+	if rest == "" {
+		return "", false
+	}
+
+	keyEnd := 0
+	for keyEnd < len(rest) && rest[keyEnd] != ' ' && rest[keyEnd] != '\t' {
+		keyEnd++
+	}
+	if keyEnd == 0 || keyEnd == len(rest) {
+		return "", false
+	}
+
+	key := rest[:keyEnd]
+	if strings.Contains(key, "=") {
+		return "", false
+	}
+
+	value := rest[keyEnd:]
+	value = strings.TrimLeft(value, " \t")
+	if value == "" {
+		return "", false
+	}
+
+	if isQuotedValue(value) || !shouldQuoteLegacyEnvValue(value) {
+		return fmt.Sprintf("%s %s=%s", trimmedLeft[:keywordEnd], key, value), true
+	}
+
+	return fmt.Sprintf("%s %s=%s", trimmedLeft[:keywordEnd], key, quoteLegacyEnvValue(value)), true
+}
+
+func originalInstructionText(lines []string, instruction *parser.Node) string {
+	if instruction == nil || instruction.StartLine <= 0 || instruction.EndLine <= 0 {
+		return ""
+	}
+	if instruction.StartLine > len(lines) || instruction.EndLine > len(lines) || instruction.StartLine > instruction.EndLine {
+		return instruction.Original
+	}
+	return strings.Join(lines[instruction.StartLine-1:instruction.EndLine], "\n")
+}
+
+func createResolutionEdit(lines []string, instruction *parser.Node, warning lint.Warning) *types.NamedEdit {
+	if instruction != nil && instruction.StartLine == int(warning.Location.Ranges[0].Start.Line) {
+		if warning.RuleName == "LegacyKeyValueFormat" {
+			if edit, ok := convertLegacyEnvInstruction(originalInstructionText(lines, instruction)); ok {
+				return &types.NamedEdit{
+					Title: "Convert to key=value format",
+					Edit:  edit,
+				}
+			}
+		}
+		if instruction.Next == nil {
+			return nil
+		}
 		if warning.RuleName == "MaintainerDeprecated" {
 			return &types.NamedEdit{
 				Title: "Convert MAINTAINER to a org.opencontainers.image.authors LABEL",
@@ -162,7 +253,7 @@ func convertToDiagnostics(source string, doc document.DockerfileDocument, lines 
 		}
 		instruction := doc.Instruction(protocol.Position{Line: uint32(warning.Location.Ranges[0].Start.Line) - 1})
 		ignoreEdit := createIgnoreEdit(warning.RuleName)
-		resolutionEdit := createResolutionEdit(instruction, warning)
+		resolutionEdit := createResolutionEdit(lines, instruction, warning)
 		if resolutionEdit == nil {
 			if ignoreEdit != nil {
 				diagnostic.Data = []types.NamedEdit{*ignoreEdit}
